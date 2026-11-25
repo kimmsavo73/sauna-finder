@@ -3,8 +3,9 @@
 
   const OVERPASS = [
     "https://overpass-api.de/api/interpreter",
-    "https://overpass.private.coffee/api/interpreter",
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
   ];
   const NOMINATIM = "https://nominatim.openstreetmap.org/search";
   const CACHE_KEY = "saunaan:last";
@@ -133,7 +134,7 @@
           if (!js || !Array.isArray(js.elements)) throw new Error("bad reply");
           resolve(js);
         } catch (e) { reject(e); } finally { clearTimeout(t); }
-      }, i * 2500);
+      }, i * 800);
     }));
     return Promise.any(tries).finally(() => { ctls.done = true; ctls.forEach(c => c.abort()); });
   }
@@ -150,8 +151,10 @@
 
     map.invalidateSize(); map.fitBounds(radiusCircle.getBounds(), { padding: [10, 10] });
     setStatus("Searching " + fmtDist(prefs.radius) + " around " + (label === "you" ? "you" : label) + "…");
+    const slow = setTimeout(() => { if (seq === searchSeq) setStatus("Still searching. The free map servers are slow right now…"); }, 8000);
     try {
       const js = await overpass(buildQuery(center[0], center[1], prefs.radius));
+      clearTimeout(slow);
       if (seq !== searchSeq) return;
       state.places = normalize(js.elements || []);
       state.fetchedAt = Date.now(); state.offline = false; state.widened = widened || null;
@@ -164,6 +167,7 @@
       store.set(CACHE_KEY, { center, label, origin: state.origin, places: state.places, fetchedAt: state.fetchedAt, radius: prefs.radius });
       render();
     } catch (e) {
+      clearTimeout(slow);
       if (seq !== searchSeq) return;
       setStatus("The sauna map servers are busy or you're offline. Try again in a minute.", true);
     }
