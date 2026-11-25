@@ -1,6 +1,6 @@
 // App shell cache so Saunaan opens offline and shows the last results.
-const CACHE = "saunaan-v4";
-const SHELL = ["./", "index.html", "style.css?v=4", "app.js?v=4", "hours.js?v=4", "reviews.js?v=4", "config.js?v=4", "manifest.webmanifest",
+const CACHE = "saunaan-v5";
+const SHELL = ["./", "index.html", "style.css?v=5", "app.js?v=5", "hours.js?v=5", "reviews.js?v=5", "config.js?v=5", "manifest.webmanifest",
   "vendor/leaflet/leaflet.js", "vendor/leaflet/leaflet.css", "icons/icon.svg", "icons/icon-192.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", e => {
