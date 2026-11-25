@@ -1,6 +1,6 @@
 // App shell cache so Saunaan opens offline and shows the last results.
 const CACHE = "saunaan-v3";
-const SHELL = ["./", "index.html", "style.css", "app.js", "hours.js", "manifest.webmanifest",
+const SHELL = ["./", "index.html", "style.css?v=3", "app.js?v=3", "hours.js?v=3", "manifest.webmanifest",
   "vendor/leaflet/leaflet.js", "vendor/leaflet/leaflet.css", "icons/icon.svg", "icons/icon-192.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", e => {
@@ -11,7 +11,7 @@ self.addEventListener("fetch", e => {
   if (e.request.method !== "GET") return;
   if (url.origin === location.origin) {
     // network first for the app itself so updates arrive, cache as fallback
-    e.respondWith(fetch(e.request).then(r => { const cp = r.clone(); caches.open(CACHE).then(c => c.put(e.request, cp)); return r; })
+    e.respondWith(fetch(e.request, { cache: "no-cache" }).then(r => { const cp = r.clone(); caches.open(CACHE).then(c => c.put(e.request, cp)); return r; })
       .catch(() => caches.match(e.request).then(r => r || caches.match("index.html"))));
   } else if (url.hostname.endsWith("tile.openstreetmap.org") || url.hostname.includes("fonts.g")) {
     // cache map tiles and fonts you've already seen
