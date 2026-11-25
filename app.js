@@ -242,6 +242,7 @@
       node.querySelector(".hours").textContent = p.st.text;
       node.querySelector(".dist").textContent = fmtDist(p.dist);
       fillDetails(node, p);
+      if (Rv.enabled) setupReviews(node, p);
       node.querySelector(".itemmain").addEventListener("click", () => select(p.id, true));
       listEl.appendChild(node);
 
@@ -261,6 +262,109 @@
     if (state.offline) msg += ` · saved ${timeAgo(state.fetchedAt)}`;
     statusEl.innerHTML = msg; statusEl.classList.remove("err");
     if (state.selected) select(state.selected, false, true);
+    if (Rv.enabled) loadReviews(shown);
+  }
+
+  // ---------- reviews ----------
+  const Rv = window.SaunaReviews || { enabled: false };
+  const reviewCache = {};            // placeKey -> [reviews]
+  const STAR = "★", NOSTAR = "☆";
+  const stars = n => STAR.repeat(n) + NOSTAR.repeat(5 - n);
+
+  async function loadReviews(places) {
+    const need = places.filter(p => !(Rv.placeKey(p.id) in reviewCache));
+    if (!need.length) return;
+    try {
+      const got = await Rv.fetchFor(need.map(p => p.id));
+      for (const p of need) reviewCache[Rv.placeKey(p.id)] = got[Rv.placeKey(p.id)] || [];
+    } catch (e) {
+      for (const p of need) { const li = itemFor(p.id); li && (li.querySelector(".revsummary").textContent = "Reviews couldn't load. Check your connection."); }
+      return;
+    }
+    for (const p of need) paintReviews(p);
+  }
+  const itemFor = id => listEl.querySelector(`.item[data-id="${CSS.escape(id)}"]`);
+
+  function summarize(list) {
+    const avg = list.reduce((a, r) => a + r.rating, 0) / list.length;
+    const counts = {};
+    list.forEach(r => r.tags.forEach(t => counts[t] = (counts[t] || 0) + 1));
+    const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t, n]) => Rv.TAGS[t] + (n > 1 ? " (" + n + ")" : ""));
+    return { avg, top };
+  }
+
+  function paintReviews(p) {
+    const li = itemFor(p.id); if (!li) return;
+    const list = reviewCache[Rv.placeKey(p.id)];
+    const badge = li.querySelector(".rating"), sum = li.querySelector(".revsummary"), ol = li.querySelector(".revlist");
+    if (!list) { sum.textContent = "Loading reviews…"; return; }
+    ol.textContent = "";
+    if (!list.length) {
+      badge.hidden = true;
+      sum.textContent = "No reviews yet. Been here? Tell others what it's like.";
+      return;
+    }
+    const { avg, top } = summarize(list);
+    badge.hidden = false;
+    badge.textContent = STAR + " " + avg.toFixed(1) + " · " + list.length + (list.length === 1 ? " review" : " reviews");
+    sum.textContent = stars(Math.round(avg)) + "  " + avg.toFixed(1) + " from " + list.length + (list.length === 1 ? " visitor" : " visitors") + (top.length ? ". Most mentioned: " + top.join(", ") : "");
+    for (const r of list.slice(0, 20)) {
+      const item = document.createElement("li"); item.className = "rev";
+      const head = document.createElement("div"); head.className = "revtop";
+      const st = document.createElement("span"); st.className = "revstars"; st.textContent = stars(r.rating); st.setAttribute("aria-label", r.rating + " out of 5");
+      const who = document.createElement("span"); who.className = "revwho"; who.textContent = (r.name || "A visitor") + (r.created ? " · " + r.created.toLocaleDateString(undefined, { month: "short", year: "numeric" }) : "");
+      head.append(st, who); item.append(head);
+      if (r.tags.length) { const tg = document.createElement("div"); tg.className = "revtags"; r.tags.forEach(t => { const c = document.createElement("span"); c.className = "tag"; c.textContent = Rv.TAGS[t]; tg.append(c); }); item.append(tg); }
+      if (r.text) { const tx = document.createElement("p"); tx.className = "revtext"; tx.textContent = r.text; item.append(tx); }
+      ol.append(item);
+    }
+  }
+
+  function setupReviews(node, p) {
+    const sec = node.querySelector(".reviews"); sec.hidden = false;
+    const form = sec.querySelector(".revform"), writeBtn = sec.querySelector(".write"), msg = sec.querySelector(".formmsg");
+    const key = Rv.placeKey(p.id);
+    let rating = 0;
+    const row = sec.querySelector(".starrow");
+    for (let i = 1; i <= 5; i++) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "starbtn"; b.textContent = NOSTAR; b.setAttribute("aria-label", i + (i === 1 ? " star" : " stars")); b.setAttribute("aria-pressed", "false");
+      b.addEventListener("click", () => { rating = i; paintStars(); msg.textContent = ""; });
+      row.append(b);
+    }
+    const paintStars = () => [...row.children].forEach((b, j) => { b.textContent = j < rating ? STAR : NOSTAR; b.setAttribute("aria-pressed", String(j < rating)); });
+    const tagRow = sec.querySelector(".tagrow");
+    for (const [k, label] of Object.entries(Rv.TAGS)) {
+      const l = document.createElement("label"); l.className = "tagopt";
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = k;
+      l.append(cb, document.createTextNode(label)); tagRow.append(l);
+    }
+    const done = store.get("saunaan:reviewed") || {};
+    if (done[key]) writeBtn.textContent = "Write another review";
+    writeBtn.addEventListener("click", () => { form.hidden = false; writeBtn.hidden = true; form.querySelector(".starbtn").focus(); });
+    sec.querySelector(".cancel").addEventListener("click", () => { form.hidden = true; writeBtn.hidden = false; msg.textContent = ""; });
+    form.addEventListener("submit", async e => {
+      e.preventDefault();
+      if (!rating) { msg.textContent = "Pick a star rating first."; return; }
+      const text = form.text.value.trim(), name = form.name.value.trim();
+      const tags = [...tagRow.querySelectorAll("input:checked")].map(c => c.value);
+      const btn = form.querySelector("[type=submit]"); btn.disabled = true; msg.textContent = "Posting…";
+      try {
+        const rv = await Rv.submit({ id: p.id, placeName: p.name, rating, text, name, tags });
+        (reviewCache[key] = reviewCache[key] || []).unshift(rv);
+        const d = store.get("saunaan:reviewed") || {}; d[key] = Date.now(); store.set("saunaan:reviewed", d);
+        try { localStorage.setItem("saunaan:name", name); } catch {}
+        form.reset(); rating = 0; paintStars();
+        form.hidden = true; writeBtn.hidden = false; writeBtn.textContent = "Write another review";
+        msg.textContent = "";
+        paintReviews(p);
+        sec.querySelector(".revsummary").textContent = "Thanks! Your review is up. " + sec.querySelector(".revsummary").textContent;
+      } catch (err) {
+        msg.textContent = "Couldn't post your review. Check your connection and try again.";
+      } finally { btn.disabled = false; }
+    });
+    try { const nm = localStorage.getItem("saunaan:name"); if (nm) form.name.value = nm; } catch {}
+    paintReviews(p);
   }
 
   function fillDetails(node, p) {
@@ -336,7 +440,14 @@
   function setStatus(text, err) { statusEl.textContent = text; statusEl.classList.toggle("err", !!err); }
 
   // refresh open/closed labels every minute
-  setInterval(() => { if (state.places.length) render(); }, 60000);
+  setInterval(() => {
+    for (const p of state.places) {
+      const li = itemFor(p.id); if (!li) continue;
+      p.st = SaunaHours.status(p.tags.opening_hours);
+      li.dataset.state = p.st.state; li.querySelector(".hours").textContent = p.st.text;
+    }
+    pinLayer.eachLayer(m => { const p = state.places.find(x => x.id === m._sid); if (p && m._state !== p.st.state) { m._state = p.st.state; m.setIcon(pinIcon(p.st.state, m._sid === state.selected)); } });
+  }, 60000);
 
   // ---------- start ----------
   const last = store.get(CACHE_KEY);
