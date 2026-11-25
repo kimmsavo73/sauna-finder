@@ -18,12 +18,12 @@
     get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
   };
-  const prefs = Object.assign({ radius: 5000, openOnly: false, unverified: false }, store.get(PREF_KEY) || {});
+  const prefs = Object.assign({ radius: 15000, openOnly: false, unverified: false }, store.get(PREF_KEY) || {});
   openOnlyEl.checked = prefs.openOnly; unverEl.checked = prefs.unverified;
   const savePrefs = () => store.set(PREF_KEY, prefs);
 
   // ---------- map ----------
-  const map = L.map("map", { zoomControl: false, attributionControl: true }).setView([60.1699, 24.9384], 12);
+  const map = L.map("map", { zoomControl: false, attributionControl: true, zoomSnap: 0.25 }).setView([60.1699, 24.9384], 12);
   L.control.zoom({ position: "bottomright" }).addTo(map);
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
@@ -112,25 +112,35 @@
       nwr["amenity"="public_bath"]${a};
       nwr["bath:type"~"sauna|hammam|onsen|thermal|banya"]${a};
       nwr["leisure"="water_park"]["sauna"]${a};
+      nwr["leisure"="spa"]${a};
+      nwr["amenity"="spa"]${a};
     );out center tags;`;
   }
 
-  async function overpass(q) {
-    let lastErr;
-    for (const url of OVERPASS) {
-      const ctl = new AbortController();
-      const t = setTimeout(() => ctl.abort(), 30000);
-      try {
-        const r = await fetch(url, { method: "POST", body: "data=" + encodeURIComponent(q), headers: { "Content-Type": "application/x-www-form-urlencoded" }, signal: ctl.signal });
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        return await r.json();
-      } catch (e) { lastErr = e; } finally { clearTimeout(t); }
-    }
-    throw lastErr || new Error("no server");
+  // Ask the mirrors in a staggered race: the first good answer wins, the rest are cancelled.
+  // The main server is often at capacity, so waiting for it alone can take a minute.
+  function overpass(q) {
+    const ctls = [];
+    const tries = OVERPASS.map((url, i) => new Promise((resolve, reject) => {
+      setTimeout(async () => {
+        if (ctls.done) return reject(new Error("done"));
+        const ctl = new AbortController(); ctls.push(ctl);
+        const t = setTimeout(() => ctl.abort(), 40000);
+        try {
+          const r = await fetch(url, { method: "POST", body: "data=" + encodeURIComponent(q), headers: { "Content-Type": "application/x-www-form-urlencoded" }, signal: ctl.signal });
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          const js = await r.json();
+          if (!js || !Array.isArray(js.elements)) throw new Error("bad reply");
+          resolve(js);
+        } catch (e) { reject(e); } finally { clearTimeout(t); }
+      }, i * 2500);
+    }));
+    return Promise.any(tries).finally(() => { ctls.done = true; ctls.forEach(c => c.abort()); });
   }
 
+  const RADII = [2000, 5000, 15000, 40000, 100000];
   let searchSeq = 0;
-  async function search(center, label, fromMe) {
+  async function search(center, label, fromMe, widened) {
     const seq = ++searchSeq;
     // fromMe: true = measure from this point, false = measure from the searched place, null = keep
     state.center = center; state.label = label;
@@ -144,7 +154,13 @@
       const js = await overpass(buildQuery(center[0], center[1], prefs.radius));
       if (seq !== searchSeq) return;
       state.places = normalize(js.elements || []);
-      state.fetchedAt = Date.now(); state.offline = false;
+      state.fetchedAt = Date.now(); state.offline = false; state.widened = widened || null;
+      // Saunas are sparse outside the Nordics: widen automatically when nothing turns up.
+      const next = RADII.find(r => r > prefs.radius);
+      if (!state.places.some(p => p.verified) && next) {
+        prefs.radius = next; paintChips(); savePrefs();
+        return search(center, label, null, widened || true);
+      }
       store.set(CACHE_KEY, { center, label, origin: state.origin, places: state.places, fetchedAt: state.fetchedAt, radius: prefs.radius });
       render();
     } catch (e) {
@@ -189,6 +205,7 @@
     if (/banya/.test(bt) || /banya/i.test(t.sauna || "")) return "Banya";
     if (t.amenity === "public_bath") return /thermal/.test(bt) ? "Thermal bath" : "Public bath";
     if (t.leisure === "water_park") return "Water park with sauna";
+    if (t.leisure === "spa" || t.amenity === "spa") return /^(yes|public|customers|designated)$/.test(t.sauna || "") ? "Spa with sauna" : "Spa · call to confirm sauna";
     if (t.leisure === "sports_centre" || t.sport === "swimming" || t.leisure === "swimming_pool") return "Swimming hall with sauna";
     if (t.leisure === "fitness_centre") return "Gym with sauna";
     if (t.tourism === "hotel" || t.tourism === "hostel") return "Hotel sauna";
@@ -235,6 +252,7 @@
     if (!state.places.length) msg = `No saunas mapped within ${fmtDist(prefs.radius)} of ${where}. Try a wider radius.`;
     else if (!shown.length) msg = prefs.openOnly ? `None open right now within ${fmtDist(prefs.radius)}. Untick “Open now” to see all.` : `Only unverified saunas here. Tick “Include unverified” to see them.`;
     else msg = `<b>${shown.length}</b> ${shown.length === 1 ? "sauna" : "saunas"} within ${fmtDist(prefs.radius)} of ${escapeHtml(where)}`;
+    if (state.widened && shown.length) msg += ` · nothing closer, so the search was widened`;
     if (!prefs.unverified && unverCount) msg += ` · ${unverCount} unverified hidden`;
     if (state.offline) msg += ` · saved ${timeAgo(state.fetchedAt)}`;
     statusEl.innerHTML = msg; statusEl.classList.remove("err");
